@@ -29,7 +29,8 @@ set -euo pipefail
 SELF=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
 US=$'\037'
 
-: "${GGB_GIT_SHOW_PAGER:=/home/milan/_workdir/workspace/bin/git-show-pager}"
+script_dir="$(cd "$(dirname "$SELF")" && pwd)"
+: "${GGB_GIT_SHOW_PAGER:=$script_dir/git-show-pager}"
 
 git_with_configured_pager() {
   git \

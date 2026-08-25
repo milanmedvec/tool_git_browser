@@ -1,11 +1,20 @@
 # tool_git_browser
 
-Standalone extraction from `workspace_archlinux_i3wm`.
+Small gitk-like terminal browser built with git, bash, fzf, and less.
 
-## Files
+## Commands
 
-- `bin/git-show-pager` from workspace `bin/git-show-pager`
-- `bin/gitm` from workspace `bin/gitm`
+- `gitm` - browse git history and diffs interactively
+- `git-show-pager` - pager helper that separates file diffs
+
+## Dependencies
+
+- bash
+- git
+- fzf
+- less
+- awk
+- tput/coreutils
 
 ## Install
 
@@ -13,5 +22,24 @@ Standalone extraction from `workspace_archlinux_i3wm`.
 ./install.sh
 ```
 
-By default commands from `bin/` are installed to `$HOME/.local/bin`.
-Override with `PREFIX=/path ./install.sh`.
+Install to a custom prefix:
+
+```bash
+PREFIX="$HOME/.local" ./install.sh
+```
+
+## Usage
+
+```bash
+gitm
+gitm --first-parent main
+gitm -- path/to/file
+```
+
+## Configuration
+
+- Override pager with `GGB_GIT_SHOW_PAGER=/path/to/pager`.
+
+## Notes
+
+These scripts were extracted from a personal Arch Linux + i3 workspace. Review dependencies and paths before using them on another machine.

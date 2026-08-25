@@ -1,0 +1,9 @@
+# editor/OS noise
+.DS_Store
+*.swp
+*.swo
+*~
+
+# local scratch files
+*.tmp
+*.bak
