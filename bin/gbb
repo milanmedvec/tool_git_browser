@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+need() {
+    command -v "$1" >/dev/null 2>&1 || {
+        printf '%s: missing required command: %s\n' "${0##*/}" "$1" >&2
+        exit 127
+    }
+}
+
+need git
+need sed
+need awk
+need dialog
+
+
 height="${GBB_DIALOG_HEIGHT:-30}"
 width="${GBB_DIALOG_WIDTH:-100}"
 choice_height="${GBB_DIALOG_CHOICE_HEIGHT:-50}"

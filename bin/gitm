@@ -352,6 +352,8 @@ open_files_pane() {
 main_ui() {
   need git
   need fzf
+  need awk
+  need sed
 
   cd "$(repo_root)"
 

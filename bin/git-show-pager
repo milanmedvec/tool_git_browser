@@ -1,5 +1,16 @@
 #!/usr/bin/env bash
 
+need() {
+    command -v "$1" >/dev/null 2>&1 || {
+        printf '%s: missing required command: %s\n' "${0##*/}" "$1" >&2
+        exit 127
+    }
+}
+
+need awk
+need less
+
+
 cols=${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}
 less_opts=${LESS-}
 # Git often sets LESS=FRX. F exits immediately for short output; X leaves
