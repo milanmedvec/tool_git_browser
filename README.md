@@ -11,14 +11,27 @@ Small gitk-like terminal browser built with git, bash, fzf, and less.
 
 ## Dependencies
 
-- bash
-- git
-- fzf
-- dialog
-- less
-- awk
-- sed
-- tput/coreutils
+Required commands:
+- `bash`
+- `git`
+- `fzf`
+- `dialog`
+- `less`
+- `awk`
+- `sed`
+- `tput`
+
+Check required commands in your shell:
+
+```bash
+need() {
+    command -v "$1" >/dev/null || echo "missing: $1"
+}
+
+for cmd in bash git fzf dialog less awk sed tput; do
+    need "$cmd"
+done
+```
 
 ## Install
 
