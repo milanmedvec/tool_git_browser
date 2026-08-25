@@ -1,4 +1,4 @@
-# git-personal-tools
+# tool_git_browser
 
 Standalone extraction from `workspace_archlinux_i3wm`.
 
