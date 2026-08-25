@@ -1,0 +1,408 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# git-graph-browser: small gitk-like CLI browser using bash + git + fzf.
+#
+# Usage:
+#   git-graph-browser              # browse all refs, like: git log --all
+#   git-graph-browser --first-parent main
+#   git-graph-browser -- path/to/file
+#
+# Keys:
+#   commit screen:
+#     Up/Down, Ctrl-n/Ctrl-p  select commit
+#     Enter                   open changed-files pane for commit, keep position
+#     Tab                     open whole commit diff in pager, keep position
+#     Ctrl-j/Ctrl-k           scroll preview line-by-line
+#     Ctrl-d/Ctrl-u           scroll preview page-by-page
+#     ?                       toggle preview
+#     q/Esc/Ctrl-c            quit
+#
+#   files screen:
+#     Up/Down, Ctrl-n/Ctrl-p  select changed file
+#     Enter                   open file diff in pager, keep position
+#     Tab                     open whole commit diff in pager
+#     Ctrl-j/Ctrl-k           scroll diff preview line-by-line
+#     Ctrl-d/Ctrl-u           scroll diff preview page-by-page
+#     q/Esc                   back to commit screen
+
+SELF=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")
+US=$'\037'
+
+: "${GGB_GIT_SHOW_PAGER:=/home/milan/_workdir/workspace/bin/git-show-pager}"
+
+git_with_configured_pager() {
+  git \
+    -c "pager.diff=$GGB_GIT_SHOW_PAGER" \
+    -c "pager.show=$GGB_GIT_SHOW_PAGER" \
+    "$@"
+}
+
+# Visual tuning. Override per run, e.g.:
+#   GGB_GRAPH_GAP='    ' GGB_REF_COLOR='bold red' git-graph-browser --all
+: "${GGB_GRAPH_GAP:=  }"
+: "${GGB_HASH_COLOR:=bold blue}"
+: "${GGB_DATE_COLOR:=cyan}"
+: "${GGB_REF_COLOR:=bold magenta}"
+: "${GGB_AUTHOR_COLOR:=green}"
+: "${GGB_LIST_DATE_FORMAT:=%Y-%m-%d}"
+: "${GGB_DETAIL_DATE_FORMAT:=${GGB_DATE_FORMAT:-%Y-%m-%d %H:%M}}"
+: "${GGB_MARK_BRANCH_TIPS:=1}"
+: "${GGB_LOCAL_TIP_SGR:=1;48;5;22}"
+: "${GGB_REMOTE_TIP_SGR:=1;48;5;24}"
+: "${GGB_BOTH_TIP_SGR:=1;48;5;53}"
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'Missing dependency: %s\n' "$1" >&2
+    if [[ "$1" == fzf ]]; then
+      printf 'Install it, e.g.: sudo apt install fzf\n' >&2
+    fi
+    exit 1
+  }
+}
+
+usage() {
+  cat <<'EOF'
+git-graph-browser: small gitk-like CLI browser using bash + git + fzf.
+
+Usage:
+  git-graph-browser [git log arguments]
+
+Examples:
+  git-graph-browser                  # default: --all
+  git-graph-browser --all
+  git-graph-browser --first-parent main
+  git-graph-browser main..feature
+  git-graph-browser --author='Alice'
+  git-graph-browser -- src/app.ts
+
+Note: revision/filter/path arguments are supported. Output-format arguments
+such as --pretty/--format may break parsing because the UI needs hashes.
+
+Visual tuning environment variables:
+  GGB_GRAPH_GAP='    '          # spaces after git graph before commit text
+  GGB_REF_COLOR='bold red'      # branch/tag decoration color
+  GGB_HASH_COLOR='bold blue'
+  GGB_DATE_COLOR='cyan'
+  GGB_AUTHOR_COLOR='green'
+  GGB_LIST_DATE_FORMAT='%Y-%m-%d'
+  GGB_DETAIL_DATE_FORMAT='%Y-%m-%d %H:%M'
+  GGB_MARK_BRANCH_TIPS=1        # set 0 to disable branch-tip line marking
+  GGB_LOCAL_TIP_SGR='1;48;5;22' # local branch tip line background
+  GGB_REMOTE_TIP_SGR='1;48;5;24'
+  GGB_BOTH_TIP_SGR='1;48;5;53'
+EOF
+}
+
+repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null || {
+    printf 'Not inside a git repository.\n' >&2
+    exit 1
+  }
+}
+
+extract_commit() {
+  local line=${1-}
+  # Commit list lines have a hidden full hash after ASCII unit separator.
+  awk -F "$US" '{print $NF}' <<<"$line" | tr -d '[:space:]'
+}
+
+extract_path() {
+  local line=${1-}
+  # Supports name-status rows:
+  #   M<TAB>file
+  #   R100<TAB>old<TAB>new
+  # For rename/copy use the destination path.
+  awk -F '\t' '{ if (NF >= 3) print $3; else print $2 }' <<<"$line"
+}
+
+untracked_diff_all() {
+  local f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    git diff --no-index --color=always -- /dev/null "$f" 2>/dev/null || true
+  done < <(git ls-files --others --exclude-standard)
+}
+
+is_tracked_path() {
+  git ls-files --error-unmatch -- "$1" >/dev/null 2>&1
+}
+
+show_commit_diff() {
+  local commit=$1
+  case "$commit" in
+    WORKTREE:STAGED)
+      git_with_configured_pager diff --cached --find-renames --find-copies --color=always ;;
+    WORKTREE:UNSTAGED)
+      { git diff --find-renames --find-copies --color=always; untracked_diff_all; } | "$GGB_GIT_SHOW_PAGER" ;;
+    *)
+      git_with_configured_pager show --find-renames --find-copies --color=always "$commit" ;;
+  esac
+}
+
+show_file_diff() {
+  local commit=$1
+  local line=${2-}
+  local path
+  path=$(extract_path "$line")
+  [[ -n "$commit" && -n "$path" ]] || return 0
+
+  case "$commit" in
+    WORKTREE:STAGED)
+      git_with_configured_pager diff --cached --color=always --find-renames --find-copies -- "$path" ;;
+    WORKTREE:UNSTAGED)
+      if is_tracked_path "$path"; then
+        git_with_configured_pager diff --color=always --find-renames --find-copies -- "$path"
+      else
+        git diff --no-index --color=always -- /dev/null "$path" 2>/dev/null | "$GGB_GIT_SHOW_PAGER"
+      fi
+      ;;
+    *)
+      git_with_configured_pager show --color=always --find-renames --find-copies "$commit" -- "$path" ;;
+  esac
+}
+
+preview_commit() {
+  local line=${1-}
+  local commit
+  commit=$(extract_commit "$line")
+  [[ -n "$commit" ]] || exit 0
+
+  case "$commit" in
+    WORKTREE:STAGED)
+      printf '\033[1;36mstaged changes (index)\033[0m\n\n'
+      printf '\033[1;35mfiles\033[0m\n'
+      git diff --cached --name-status --find-renames --find-copies 2>/dev/null | sed '/^$/d'
+      printf '\n\033[1;35mstat\033[0m\n'
+      git diff --cached --stat --color=always 2>/dev/null
+      return
+      ;;
+    WORKTREE:UNSTAGED)
+      printf '\033[1;36munstaged + untracked changes (worktree)\033[0m\n\n'
+      printf '\033[1;35mfiles\033[0m\n'
+      { git diff --name-status --find-renames --find-copies 2>/dev/null | sed '/^$/d'
+        git ls-files --others --exclude-standard 2>/dev/null | sed 's/^/A\t/'
+      }
+      printf '\n\033[1;35mstat\033[0m\n'
+      git diff --stat --color=always 2>/dev/null
+      return
+      ;;
+  esac
+
+  printf '\033[1;36mcommit %s\033[0m\n\n' "$commit"
+  git show --no-patch --decorate --color=always --format="%C(${GGB_HASH_COLOR})%h%Creset %C(${GGB_DATE_COLOR})%ad%Creset %C(${GGB_REF_COLOR})%d%Creset%n%C(bold)%s%Creset%n%C(${GGB_AUTHOR_COLOR})%an <%ae>%Creset%n" --date="format:${GGB_DETAIL_DATE_FORMAT}" "$commit" 2>/dev/null || true
+  printf '\n\033[1;35mfiles\033[0m\n'
+  git show --pretty=format: --name-status --find-renames --find-copies "$commit" 2>/dev/null | sed '/^$/d' || true
+  printf '\n\033[1;35mstat\033[0m\n'
+  git show --stat --oneline --color=always --find-renames --find-copies "$commit" 2>/dev/null | sed '1d' || true
+}
+
+changed_files() {
+  local commit=$1
+  case "$commit" in
+    WORKTREE:STAGED)
+      git diff --cached --name-status --find-renames --find-copies 2>/dev/null | sed '/^$/d' ;;
+    WORKTREE:UNSTAGED)
+      { git diff --name-status --find-renames --find-copies 2>/dev/null | sed '/^$/d'
+        git ls-files --others --exclude-standard 2>/dev/null | sed 's/^/A\t/'
+      } ;;
+    *)
+      git show --pretty=format: --name-status --find-renames --find-copies "$commit" 2>/dev/null | sed '/^$/d' ;;
+  esac
+}
+
+preview_file() {
+  local commit=${1-}
+  local line=${2-}
+  local path
+  path=$(extract_path "$line")
+  [[ -n "$commit" && -n "$path" ]] || exit 0
+
+  printf '\033[1;36m%s\033[0m\n\n' "$line"
+  case "$commit" in
+    WORKTREE:STAGED)
+      git diff --cached --color=always --find-renames --find-copies -- "$path" 2>/dev/null || true ;;
+    WORKTREE:UNSTAGED)
+      if is_tracked_path "$path"; then
+        git diff --color=always --find-renames --find-copies -- "$path" 2>/dev/null || true
+      else
+        git diff --no-index --color=always -- /dev/null "$path" 2>/dev/null || true
+      fi
+      ;;
+    *)
+      git show --color=always --find-renames --find-copies "$commit" -- "$path" 2>/dev/null || true ;;
+  esac
+}
+
+mark_branch_tips() {
+  if [[ "$GGB_MARK_BRANCH_TIPS" == 0 || "$GGB_MARK_BRANCH_TIPS" == false ]]; then
+    cat
+    return
+  fi
+
+  local local_tips remote_tips
+  local_tips=$(git for-each-ref --format='%(objectname) %(symref)' refs/heads 2>/dev/null | awk '$2 == "" { print $1 }')
+  remote_tips=$(git for-each-ref --format='%(objectname) %(symref)' refs/remotes 2>/dev/null | awk '$2 == "" { print $1 }')
+
+  awk \
+    -v US="$US" \
+    -v local_tips="$local_tips" \
+    -v remote_tips="$remote_tips" \
+    -v local_sgr="$GGB_LOCAL_TIP_SGR" \
+    -v remote_sgr="$GGB_REMOTE_TIP_SGR" \
+    -v both_sgr="$GGB_BOTH_TIP_SGR" '
+      BEGIN {
+        esc = sprintf("%c", 27)
+        reset_re = esc "\\[(0)?m"
+
+        split(local_tips, l, "\n")
+        for (i in l) if (length(l[i])) local[l[i]] = 1
+
+        split(remote_tips, r, "\n")
+        for (i in r) if (length(r[i])) remote[r[i]] = 1
+      }
+
+      function stylize(line, sgr) {
+        if (!length(sgr) || sgr == "none") return line
+        # Preserve the background across git color resets inside the line.
+        gsub(reset_re, esc "[0m" esc "[" sgr "m", line)
+        return esc "[" sgr "m" line esc "[0m"
+      }
+
+      {
+        pos = index($0, US)
+        if (!pos) {
+          print
+          next
+        }
+
+        visible = substr($0, 1, pos - 1)
+        hidden = substr($0, pos)
+        hash = substr($0, pos + length(US))
+        gsub(/[[:space:]]/, "", hash)
+
+        sgr = ""
+        if ((hash in local) && (hash in remote)) sgr = both_sgr
+        else if (hash in local) sgr = local_sgr
+        else if (hash in remote) sgr = remote_sgr
+
+        if (length(sgr)) print stylize(visible, sgr) hidden
+        else print $0
+      }
+    '
+}
+
+worktree_pseudo_log() {
+  local has_untracked=0
+  [[ -n "$(git ls-files --others --exclude-standard 2>/dev/null)" ]] && has_untracked=1
+  local has_unstaged=0
+  git diff --quiet -- 2>/dev/null || has_unstaged=1
+
+  if [[ $has_untracked -eq 1 || $has_unstaged -eq 1 ]]; then
+    printf '%s\033[31m●\033[0m unstaged + untracked changes (worktree)%s%s\n' "$GGB_GRAPH_GAP" "$US" "WORKTREE:UNSTAGED"
+  fi
+  if ! git diff --cached --quiet -- 2>/dev/null; then
+    printf '%s\033[1;33m●\033[0m staged changes (index)%s%s\n' "$GGB_GRAPH_GAP" "$US" "WORKTREE:STAGED"
+  fi
+}
+
+stash_log() {
+  git stash list \
+    --date="format:${GGB_LIST_DATE_FORMAT}" \
+    --color=always \
+    --pretty=format:"${GGB_GRAPH_GAP}%C(${GGB_HASH_COLOR})%h%Creset %C(${GGB_DATE_COLOR})%ad%Creset %C(${GGB_REF_COLOR})(stash)%Creset %s %C(${GGB_AUTHOR_COLOR})(%an)%Creset${US}%H" \
+    2>/dev/null || true
+}
+
+commit_log() {
+  local args=("$@")
+
+  {
+    worktree_pseudo_log
+    stash_log
+    git log \
+      --graph \
+      --date="format:${GGB_LIST_DATE_FORMAT}" \
+      --color=always \
+      --pretty=format:"${GGB_GRAPH_GAP}%C(${GGB_HASH_COLOR})%h%Creset %C(${GGB_DATE_COLOR})%ad%Creset %C(${GGB_REF_COLOR})%d%Creset %s %C(${GGB_AUTHOR_COLOR})(%an)%Creset${US}%H" \
+      "${args[@]}"
+  } | mark_branch_tips
+}
+
+open_files_pane() {
+  local commit=$1
+  local short
+  case "$commit" in
+    WORKTREE:STAGED) short="staged" ;;
+    WORKTREE:UNSTAGED) short="unstaged+untracked" ;;
+    *) short=$(git rev-parse --short "$commit") ;;
+  esac
+
+  changed_files "$commit" |
+    fzf --ansi --no-sort --reverse --cycle \
+      --header="commit $short - changed files | Enter: file diff | Tab: whole commit | q/Esc: back | Ctrl-j/k: scroll preview" \
+      --preview="$SELF __preview_file $commit {}" \
+      --preview-window='right:70%:wrap' \
+      --bind='enter:execute('$SELF' __show_file_diff '$commit' {}),tab:execute('$SELF' __show_commit_diff '$commit'),q:abort,ctrl-j:preview-down,ctrl-k:preview-up,ctrl-d:preview-page-down,ctrl-u:preview-page-up,?:toggle-preview' \
+    >/dev/null || return 0
+}
+
+main_ui() {
+  need git
+  need fzf
+
+  cd "$(repo_root)"
+
+  commit_log "$@" |
+    fzf --ansi --no-sort --reverse --cycle \
+      --delimiter="$US" --with-nth=1 \
+      --header='Git graph | Enter: files pane | Tab: whole commit diff | q/Esc: quit | Ctrl-j/k: scroll preview | ?: toggle preview' \
+      --preview="$SELF __preview_commit {}" \
+      --preview-window='right:45%:wrap' \
+      --bind='enter:execute('$SELF' __files_pane {}),tab:execute('$SELF' __show_commit_diff {}),q:abort,ctrl-j:preview-down,ctrl-k:preview-up,ctrl-d:preview-page-down,ctrl-u:preview-page-up,?:toggle-preview' \
+    >/dev/null || true
+}
+
+case ${1-} in
+  -h|--help)
+    usage
+    ;;
+  __preview_commit)
+    shift
+    preview_commit "$*"
+    ;;
+  __preview_file)
+    shift
+    commit=${1-}
+    shift || true
+    preview_file "$commit" "$*"
+    ;;
+  __files_pane)
+    shift
+    # Receives the selected fzf line from the commit list.
+    arg=${*-}
+    if [[ "$arg" == *"$US"* ]]; then
+      arg=$(extract_commit "$arg")
+    fi
+    open_files_pane "$arg"
+    ;;
+  __show_commit_diff)
+    shift
+    # This can receive either a raw hash or a selected fzf line.
+    arg=${*-}
+    if [[ "$arg" == *"$US"* ]]; then
+      arg=$(extract_commit "$arg")
+    fi
+    show_commit_diff "$arg"
+    ;;
+  __show_file_diff)
+    shift
+    commit=${1-}
+    shift || true
+    show_file_diff "$commit" "$*"
+    ;;
+  *)
+    main_ui "$@"
+    ;;
+esac

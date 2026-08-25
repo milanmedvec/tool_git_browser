@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+
+cols=${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}
+less_opts=${LESS-}
+# Git often sets LESS=FRX. F exits immediately for short output; X leaves
+# output behind after quit. Remove both so fzf execute() opens a stable pager
+# and returns to a clean screen.
+less_opts=${less_opts//[FX]/}
+
+awk -v cols="$cols" '
+BEGIN {
+  # Use cols - 1 to avoid some terminals wrapping an exact-width line.
+  for (i = 1; i < cols; i++) sep = sep "━"
+}
+{
+  plain = $0
+  gsub(/\033\[[0-9;]*m/, "", plain)
+
+  if (plain ~ /^diff --git /) {
+    in_file_header = 1
+    print ""
+    print "\033[36m" sep "\033[0m"
+  }
+
+  print
+
+  if (in_file_header && plain ~ /^\+\+\+ /) {
+    print "\033[36m" sep "\033[0m"
+    in_file_header = 0
+  }
+}
+' | LESS="$less_opts" less -R
