@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+height="${GBB_DIALOG_HEIGHT:-30}"
+width="${GBB_DIALOG_WIDTH:-100}"
+choice_height="${GBB_DIALOG_CHOICE_HEIGHT:-50}"
+backtitle="Git branch selector"
+title="Git branch selector"
+menu="Which branch do you want to checkout?"
+
+mapfile -t branches < <(
+    git reflog --format='%gs' |
+        sed -n 's/^checkout: moving from .* to //p' |
+        awk 'NF && !seen[$0]++'
+)
+
+if [[ ${#branches[@]} -eq 0 ]]; then
+    echo "No recent checkout branches found" >&2
+    exit 1
+fi
+
+options=()
+for i in "${!branches[@]}"; do
+    choice=$((i + 1))
+    options+=("$choice" "${branches[$i]}")
+    if ((choice >= choice_height)); then
+        break
+    fi
+done
+
+choice="$(dialog \
+    --clear \
+    --backtitle "$backtitle" \
+    --title "$title" \
+    --menu "$menu" \
+    "$height" "$width" "$choice_height" \
+    "${options[@]}" \
+    2>&1 >/dev/tty)" || exit 1
+
+if [[ -z "$choice" ]]; then
+    clear
+    echo "No branch selected" >&2
+    exit 1
+fi
+
+if ! [[ "$choice" =~ ^[0-9]+$ ]] || ((choice < 1 || choice > ${#branches[@]})); then
+    clear
+    echo "Invalid branch selection: $choice" >&2
+    exit 1
+fi
+
+clear
+branch="${branches[$((choice - 1))]}"
+git checkout "$branch"

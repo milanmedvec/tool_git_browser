@@ -6,14 +6,18 @@ Small gitk-like terminal browser built with git, bash, fzf, and less.
 
 - `gitm` - browse git history and diffs interactively
 - `git-show-pager` - pager helper that separates file diffs
+- `gml` - repeat a previous commit message in an editable commit
+- `gbb` - checkout a branch selected from recent checkout reflog entries
 
 ## Dependencies
 
 - bash
 - git
 - fzf
+- dialog
 - less
 - awk
+- sed
 - tput/coreutils
 
 ## Install
@@ -34,6 +38,8 @@ PREFIX="$HOME/.local" ./install.sh
 gitm
 gitm --first-parent main
 gitm -- path/to/file
+gml
+gbb
 ```
 
 ## Configuration

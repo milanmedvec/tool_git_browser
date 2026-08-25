@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+height="${GML_DIALOG_HEIGHT:-30}"
+width="${GML_DIALOG_WIDTH:-100}"
+choice_height="${GML_DIALOG_CHOICE_HEIGHT:-50}"
+backtitle="Git message selector"
+title="Git message selector"
+menu="Which message do you want to repeat?"
+
+mapfile -t logs < <(git log --pretty='format:%s')
+
+if [[ ${#logs[@]} -eq 0 ]]; then
+    echo "No git commit messages found" >&2
+    exit 1
+fi
+
+options=()
+for i in "${!logs[@]}"; do
+    choice=$((i + 1))
+    options+=("$choice" "${logs[$i]}")
+    if ((choice >= choice_height)); then
+        break
+    fi
+done
+
+choice="$(dialog \
+    --clear \
+    --backtitle "$backtitle" \
+    --title "$title" \
+    --menu "$menu" \
+    "$height" "$width" "$choice_height" \
+    "${options[@]}" \
+    2>&1 >/dev/tty)" || exit 1
+
+if [[ -z "$choice" ]]; then
+    clear
+    echo "No message selected" >&2
+    exit 1
+fi
+
+if ! [[ "$choice" =~ ^[0-9]+$ ]] || ((choice < 1 || choice > ${#logs[@]})); then
+    clear
+    echo "Invalid message selection: $choice" >&2
+    exit 1
+fi
+
+clear
+msg="${logs[$((choice - 1))]}"
+git commit --no-verify -m "$msg" -e
+clear
